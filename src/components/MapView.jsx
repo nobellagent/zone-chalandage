@@ -12,7 +12,7 @@ const TILE_PROVIDERS = {
   satellite: { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr: '&copy; Esri' },
 }
 
-export default function MapView({ criteria, spatialData, intersection, loading }) {
+export default function MapView({ criteria, spatialData, intersection, loading, panelOpen }) {
   const mapRef = useRef(null)
   const mapInstance = useRef(null)
   const overlaysRef = useRef([])
@@ -31,14 +31,13 @@ export default function MapView({ criteria, spatialData, intersection, loading }
     return a
   }, [criteria])
 
-  // Init map once — use canvas renderer for performance
+  // Init map once — SVG renderer (more reliable z-index than canvas)
   useEffect(() => {
     if (mapInstance.current) return
     const map = L.map(mapRef.current, {
       center: CENTER,
       zoom: ZOOM,
       zoomControl: true,
-      preferCanvas: true, // Canvas > SVG for 1000s of features
     })
     const t = TILE_PROVIDERS.osm
     L.tileLayer(t.url, { attribution: t.attr, maxZoom: 18 }).addTo(map)
@@ -68,6 +67,15 @@ export default function MapView({ criteria, spatialData, intersection, loading }
     const t = TILE_PROVIDERS[tiles]
     L.tileLayer(t.url, { attribution: t.attr, maxZoom: 18 }).addTo(map)
   }, [tiles])
+
+  // Invalidate size when panel toggles (map container resizes)
+  useEffect(() => {
+    const map = mapInstance.current
+    if (!map) return
+    // Small delay to let CSS transition finish
+    const id = setTimeout(() => map.invalidateSize(), 350)
+    return () => clearTimeout(id)
+  }, [panelOpen])
 
   // Update overlays when criteria or spatial data change
   useEffect(() => {

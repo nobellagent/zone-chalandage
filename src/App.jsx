@@ -70,6 +70,7 @@ export default function App() {
         spatialData={spatial.data}
         intersection={duckdb.intersection}
         loading={spatial.loading || duckdb.loading}
+        panelOpen={panelOpen}
       />
     </div>
   )
