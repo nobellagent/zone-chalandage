@@ -1,0 +1,11 @@
+{"type":"FeatureCollection","features":[
+  {"type":"Feature","geometry":{"type":"Point","coordinates":[-0.12,49.49]},"properties":{"nom":"Sandouville","seveso":"AS","commune":"Sandouville"}},
+  {"type":"Feature","geometry":{"type":"Point","coordinates":[1.09,49.44]},"properties":{"nom":"Butachimie","seveso":"AS","commune":"Le Grand-Quevilly"}},
+  {"type":"Feature","geometry":{"type":"Point","coordinates":[1.04,49.42]},"properties":{"nom":"Lubrizol","seveso":"AS","commune":"Rouen"}},
+  {"type":"Feature","geometry":{"type":"Point","coordinates":[-0.63,49.25]},"properties":{"nom":"Bayer","seveso":"AS","commune":"Bayeux"}},
+  {"type":"Feature","geometry":{"type":"Point","coordinates":[-1.25,49.65]},"properties":{"nom":"CMB","seveso":"AS","commune":"Cherbourg"}},
+  {"type":"Feature","geometry":{"type":"Point","coordinates":[0.17,49.08]},"properties":{"nom":"Yara","seveso":"AS","commune":"Le Havre"}},
+  {"type":"Feature","geometry":{"type":"Point","coordinates":[-0.68,49.11]},"properties":{"nom":"Villers-Bocage","seveso":"AS","commune":"Villers-Bocage"}},
+  {"type":"Feature","geometry":{"type":"Point","coordinates":[-0.48,49.36]},"properties":{"nom":"Total","seveso":"AS","commune":"Gonfreville-l'Orcher"}},
+  {"type":"Feature","geometry":{"type":"Point","coordinates":[1.15,49.30]},"properties":{"nom":"Monsanto","seveso":"AS","commune":"Notre-Dame-de-Bondeville"}}
+]}
