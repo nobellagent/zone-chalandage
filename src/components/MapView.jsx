@@ -12,11 +12,12 @@ const TILE_PROVIDERS = {
   satellite: { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr: '&copy; Esri' },
 }
 
-export default function MapView({ criteria, spatialData, intersection, loading, panelOpen }) {
+export default function MapView({ criteria, spatialData, intersection, zone0, loading, panelOpen }) {
   const mapRef = useRef(null)
   const mapInstance = useRef(null)
   const overlaysRef = useRef([])
   const intersectionLayerRef = useRef(null)
+  const zone0LayerRef = useRef(null)
   const [tiles, setTiles] = useState('osm')
 
   // Legend
@@ -135,6 +136,30 @@ export default function MapView({ criteria, spatialData, intersection, loading, 
 
   }, [criteria, spatialData])
 
+  // Update zone0 layer (initial intersection — bold outline)
+  useEffect(() => {
+    const map = mapInstance.current
+    if (!map) return
+
+    if (zone0LayerRef.current) {
+      map.removeLayer(zone0LayerRef.current)
+      zone0LayerRef.current = null
+    }
+
+    if (zone0?.features?.length > 0) {
+      const layer = L.geoJSON(zone0, {
+        style: {
+          color: '#f59e0b',
+          fillColor: '#f59e0b',
+          fillOpacity: 0.08,
+          weight: 5,
+          opacity: 0.9,
+        },
+      }).addTo(map)
+      zone0LayerRef.current = layer
+    }
+  }, [zone0])
+
   // Update DuckDB intersection polygon
   useEffect(() => {
     const map = mapInstance.current
@@ -200,6 +225,14 @@ export default function MapView({ criteria, spatialData, intersection, loading, 
             </div>
           ))}
         </div>
+        {zone0?.features?.length > 0 && (
+          <div className="mt-2 pt-2 border-t border-gray-200">
+            <div className="flex items-center gap-2">
+              <span className="inline-block w-4 h-4 rounded border-2 border-amber-500 bg-amber-400/10" />
+              <span className="text-gray-700 font-medium">Intersection initiale (zone0)</span>
+            </div>
+          </div>
+        )}
         {intersection?.features?.length > 0 && (
           <div className="mt-2 pt-2 border-t border-gray-200">
             <div className="flex items-center gap-2">

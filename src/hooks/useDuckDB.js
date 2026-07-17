@@ -3,7 +3,6 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 // Coordinates
 const MENIL_JEAN = [48.7386, -0.2197]
 const MAY_SUR_ORNE = [49.1048, -0.3678]
-const SRID = 4326
 
 let dbInstance = null
 let dbInitPromise = null
@@ -118,12 +117,21 @@ function arrowToGeoJSON(table) {
   return { type: 'FeatureCollection', features }
 }
 
+/**
+ * Returns null-safe string expression for DuckDB coord.
+ * ST_Point takes (lon, lat) in DuckDB.
+ */
+function stPoint(lat, lon) {
+  return `ST_Point(${lon}, ${lat})`
+}
+
 export function useDuckDB() {
   const [state, setState] = useState({
     ready: false,
     loading: true,
     error: null,
     intersection: null,
+    zone0: null,        // initial intersection zone (for bold outline display)
     lastQuery: null,
   })
   const stateRef = useRef(state)
@@ -151,16 +159,15 @@ export function useDuckDB() {
         }
       }
 
-      // Build the spatial query
       const menilKm = criteria.menilJean.enabled ? criteria.menilJean.km : 99999
       const mayKm = criteria.maySurOrne.enabled ? criteria.maySurOrne.km : 99999
 
-      // Build CTE chain: zone0 = intersection of buffers, then subtract exclusions, then intersect inclusions
+      // Step-by-step CTE: each step only considers features that intersect the current zone
       let query = `
         WITH zone0 AS (
           SELECT ST_Intersection(
-            ST_Buffer(ST_Point(${MENIL_JEAN[1]}, ${MENIL_JEAN[0]}), ${menilKm} * 1000),
-            ST_Buffer(ST_Point(${MAY_SUR_ORNE[1]}, ${MAY_SUR_ORNE[0]}), ${mayKm} * 1000)
+            ST_Buffer(${stPoint(MENIL_JEAN[0], MENIL_JEAN[1])}, ${menilKm} * 1000),
+            ST_Buffer(${stPoint(MAY_SUR_ORNE[0], MAY_SUR_ORNE[1])}, ${mayKm} * 1000)
           ) AS geom
         )
       `
@@ -168,68 +175,92 @@ export function useDuckDB() {
       let currentAlias = 'zone0'
       let stepIdx = 0
 
-      // Exclusion: SEVESO
-      if (criteria.seveso.enabled) {
+      // Helper: for exclusions, filter features whose buffer intersects current zone
+      const addExclusion = (alias, tableName, bufferMeters) => {
         stepIdx++
-        const alias = `zone${stepIdx}`
-        query += `, ${alias} AS (
-          SELECT ST_Difference(${currentAlias}.geom, (
-            SELECT ST_UnionAgg(ST_Buffer(geom, 3000)) FROM seveso
-          )) AS geom FROM ${currentAlias}
+        const nextAlias = `zone${stepIdx}`
+        query += `, ${nextAlias} AS (
+          SELECT ST_Difference(${alias}.geom, (
+            SELECT ST_UnionAgg(ST_Buffer(f.geom, ${bufferMeters}))
+            FROM ${tableName} f
+            WHERE ST_Intersects(ST_Buffer(f.geom, ${bufferMeters}), (SELECT geom FROM ${alias}))
+          )) AS geom FROM ${alias}
         )`
-        currentAlias = alias
+        return nextAlias
+      }
+
+      // Helper: for inclusions, filter features whose buffer intersects current zone
+      const addInclusion = (alias, tableSource, bufferMeters) => {
+        stepIdx++
+        const nextAlias = `zone${stepIdx}`
+        query += `, ${nextAlias} AS (
+          SELECT ST_Intersection(${alias}.geom, (
+            SELECT ST_UnionAgg(ST_Buffer(f.geom, ${bufferMeters}))
+            FROM (${tableSource}) f
+            WHERE ST_Intersects(ST_Buffer(f.geom, ${bufferMeters}), (SELECT geom FROM ${alias}))
+          )) AS geom FROM ${alias}
+        )`
+        return nextAlias
+      }
+
+      // Exclusion: SEVESO (3km buffer)
+      if (criteria.seveso.enabled) {
+        currentAlias = addExclusion(currentAlias, 'seveso', 3000)
       }
 
       // Exclusion: roads
       if (criteria.grandeRoute.enabled) {
-        stepIdx++
-        const alias = `zone${stepIdx}`
-        query += `, ${alias} AS (
-          SELECT ST_Difference(${currentAlias}.geom, (
-            SELECT ST_UnionAgg(ST_Buffer(geom, ${criteria.grandeRoute.km * 1000})) FROM routes
-          )) AS geom FROM ${currentAlias}
-        )`
-        currentAlias = alias
+        currentAlias = addExclusion(currentAlias, 'routes', criteria.grandeRoute.km * 1000)
       }
 
       // Exclusion: nuisances
       if (criteria.nuisance.enabled) {
-        stepIdx++
-        const alias = `zone${stepIdx}`
-        query += `, ${alias} AS (
-          SELECT ST_Difference(${currentAlias}.geom, (
-            SELECT ST_UnionAgg(ST_Buffer(geom, ${criteria.nuisance.km * 1000})) FROM nuisances
-          )) AS geom FROM ${currentAlias}
-        )`
-        currentAlias = alias
+        currentAlias = addExclusion(currentAlias, 'nuisances', criteria.nuisance.km * 1000)
       }
 
       // Inclusion: train stations
       if (criteria.gare.enabled) {
-        stepIdx++
-        const alias = `zone${stepIdx}`
-        query += `, ${alias} AS (
-          SELECT ST_Intersection(${currentAlias}.geom, (
-            SELECT ST_UnionAgg(ST_Buffer(geom, ${criteria.gare.km * 1000})) FROM (
-              SELECT * FROM gares_ouest UNION ALL SELECT * FROM gares_est
-            )
-          )) AS geom FROM ${currentAlias}
-        )`
-        currentAlias = alias
+        currentAlias = addInclusion(
+          currentAlias,
+          `SELECT * FROM gares_ouest UNION ALL SELECT * FROM gares_est`,
+          criteria.gare.km * 1000
+        )
       }
 
-      query += `\nSELECT ST_AsGeoJSON(geom) AS geojson FROM ${currentAlias} WHERE geom IS NOT NULL AND ST_Area(geom) > 0;`
+      // Final query: return zone0 + final result
+      query += `
+        SELECT
+          (SELECT ST_AsGeoJSON(geom) FROM zone0) AS zone0_geojson,
+          ST_AsGeoJSON(geom) AS geojson
+        FROM ${currentAlias}
+        WHERE geom IS NOT NULL AND ST_Area(geom) > 0;
+      `
 
-      // Execute - v1.33.x returns an Arrow Table
+      // Execute
       const result = await conn.query(query)
       const fc = arrowToGeoJSON(result)
+
+      // Extract zone0 from the first row — it's returned alongside the final result
+      let zone0Fc = null
+      if (result.numRows > 0) {
+        const row = result.get(0)
+        const zone0Raw = row['zone0_geojson']
+        if (zone0Raw) {
+          const geom = typeof zone0Raw === 'string' ? JSON.parse(zone0Raw) : zone0Raw
+          zone0Fc = {
+            type: 'FeatureCollection',
+            features: [{ type: 'Feature', geometry: geom, properties: {} }]
+          }
+        }
+      }
 
       setState(prev => ({
         ...prev,
         intersection: fc.features.length > 0 ? fc : null,
+        zone0: zone0Fc,
         lastQuery: query,
       }))
-      stateRef.current = { ...stateRef.current, intersection: fc }
+      stateRef.current = { ...stateRef.current, intersection: fc, zone0: zone0Fc }
 
     } catch (e) {
       console.error('❌ Intersection query failed:', e)
@@ -244,7 +275,6 @@ export function useDuckDB() {
       try {
         const { conn } = await initDuckDB()
         if (!cancelled) {
-          // Test query
           const test = await conn.query('SELECT 1 AS n')
           console.log('✅ DuckDB test query OK')
           setState(prev => ({ ...prev, ready: true, loading: false }))

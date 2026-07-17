@@ -69,6 +69,7 @@ export default function App() {
         criteria={criteria}
         spatialData={spatial.data}
         intersection={duckdb.intersection}
+        zone0={duckdb.zone0}
         loading={spatial.loading || duckdb.loading}
         panelOpen={panelOpen}
       />
