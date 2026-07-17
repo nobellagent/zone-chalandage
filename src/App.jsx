@@ -1,7 +1,8 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import CriteriaPanel from './components/CriteriaPanel.jsx'
 import MapView from './components/MapView.jsx'
 import { useSpatialData } from './hooks/useSpatialData.js'
+import { useDuckDB } from './hooks/useDuckDB.js'
 
 const DEFAULT_CRITERIA = {
   menilJean: { enabled: true, km: 120 },
@@ -17,7 +18,20 @@ const DEFAULT_CRITERIA = {
 export default function App() {
   const [criteria, setCriteria] = useState(DEFAULT_CRITERIA)
   const [panelOpen, setPanelOpen] = useState(true)
-  const { data, loading, error } = useSpatialData()
+  const criteriaRef = useRef(criteria)
+
+  const spatial = useSpatialData()
+  const duckdb = useDuckDB()
+
+  // Keep ref in sync
+  useEffect(() => { criteriaRef.current = criteria }, [criteria])
+
+  // Recompute when criteria or spatial data changes
+  useEffect(() => {
+    if (duckdb.ready && spatial.data && !spatial.loading) {
+      duckdb.computeIntersection(criteriaRef.current, spatial.data)
+    }
+  }, [duckdb.ready, spatial.data, spatial.loading, criteria])
 
   const handleCriteriaChange = useCallback((updated) => {
     setCriteria(prev => ({ ...prev, ...updated }))
@@ -32,13 +46,15 @@ export default function App() {
         <CriteriaPanel
           criteria={criteria}
           onChange={handleCriteriaChange}
-          loading={loading}
-          error={error}
-          data={data}
+          loading={spatial.loading || duckdb.loading}
+          error={spatial.error || duckdb.error}
+          data={spatial.data}
+          dbReady={duckdb.ready}
+          intersectionCount={duckdb.intersection?.features?.length || 0}
         />
       </div>
 
-      {/* Panel toggle button */}
+      {/* Panel toggle */}
       <button
         onClick={() => setPanelOpen(!panelOpen)}
         className="absolute top-4 left-4 z-[1000] bg-white rounded-lg shadow-md border border-gray-200 p-2 hover:bg-gray-50 transition-colors"
@@ -49,7 +65,12 @@ export default function App() {
         </svg>
       </button>
 
-      <MapView criteria={criteria} spatialData={data} loading={loading} />
+      <MapView
+        criteria={criteria}
+        spatialData={spatial.data}
+        intersection={duckdb.intersection}
+        loading={spatial.loading || duckdb.loading}
+      />
     </div>
   )
 }
