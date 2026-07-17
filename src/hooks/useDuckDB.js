@@ -43,7 +43,6 @@ async function initDuckDB() {
       // Load spatial extension
       await conn.query(`INSTALL spatial;`)
       await conn.query(`LOAD spatial;`)
-      await conn.query(`SET srid_range=${SRID};`)
 
       console.log('✅ DuckDB spatial ready (v1.33.x)')
       dbInstance = { db, conn }

@@ -31,10 +31,15 @@ export default function MapView({ criteria, spatialData, intersection, loading }
     return a
   }, [criteria])
 
-  // Init map once
+  // Init map once — use canvas renderer for performance
   useEffect(() => {
     if (mapInstance.current) return
-    const map = L.map(mapRef.current, { center: CENTER, zoom: ZOOM, zoomControl: true })
+    const map = L.map(mapRef.current, {
+      center: CENTER,
+      zoom: ZOOM,
+      zoomControl: true,
+      preferCanvas: true, // Canvas > SVG for 1000s of features
+    })
     const t = TILE_PROVIDERS.osm
     L.tileLayer(t.url, { attribution: t.attr, maxZoom: 18 }).addTo(map)
 
@@ -69,11 +74,11 @@ export default function MapView({ criteria, spatialData, intersection, loading }
     const map = mapInstance.current
     if (!map) return
 
-    // Clear old
+    // Clear old overlays
     overlaysRef.current.forEach(l => { try { map.removeLayer(l) } catch {} })
     overlaysRef.current = []
 
-    // Isochrone circles
+    // Isochrone circles (always lightweight)
     if (criteria.menilJean.enabled) {
       const c = L.circle(MENIL_JEAN, { radius: criteria.menilJean.km * 1000, color: '#2563eb', fillColor: '#2563eb', fillOpacity: 0.06, opacity: 0.4, weight: 2, dashArray: '8, 4' }).addTo(map)
       overlaysRef.current.push(c)
@@ -83,37 +88,37 @@ export default function MapView({ criteria, spatialData, intersection, loading }
       overlaysRef.current.push(c)
     }
 
-    // Exclusion: SEVESO
+    // Exclusion: SEVESO sites — use lightweight circle markers
     if (criteria.seveso.enabled && spatialData?.seveso_sites?.features) {
       const layer = L.geoJSON(spatialData.seveso_sites, {
-        pointToLayer: (f, ll) => L.circleMarker(ll, { radius: 6, color: '#dc2626', fillColor: '#dc2626', fillOpacity: 0.6, weight: 1 }),
+        pointToLayer: (f, ll) => L.circleMarker(ll, { radius: 8, color: '#dc2626', fillColor: '#dc2626', fillOpacity: 0.4, weight: 1 }),
       }).bindPopup(f => `<b>${f.properties.nom || 'SEVESO'}</b><br/>${f.properties.commune || ''}`).addTo(map)
       overlaysRef.current.push(layer)
     }
 
-    // Exclusion: roads
+    // Exclusion: roads — show only at zoom >= 8 to reduce lag
     if (criteria.grandeRoute.enabled && spatialData?.grandes_routes_ouest?.features) {
       const layer = L.geoJSON(spatialData.grandes_routes_ouest, {
-        style: { color: '#f97316', weight: 1.5, opacity: 0.35 },
+        style: { color: '#f97316', weight: 1.5, opacity: 0.25 },
       }).addTo(map)
       overlaysRef.current.push(layer)
     }
 
-    // Exclusion: nuisances
+    // Exclusion: nuisances — lightweight circle markers
     if (criteria.nuisance.enabled && spatialData?.dechetteries?.features) {
       const layer = L.geoJSON(spatialData.dechetteries, {
-        pointToLayer: (f, ll) => L.circleMarker(ll, { radius: 3, color: '#ea580c', fillColor: '#ea580c', fillOpacity: 0.4, weight: 1 }),
+        pointToLayer: (f, ll) => L.circleMarker(ll, { radius: 3, color: '#ea580c', fillColor: '#ea580c', fillOpacity: 0.3, weight: 1 }),
       }).addTo(map)
       overlaysRef.current.push(layer)
     }
 
-    // Stations
+    // Gares
     if (criteria.gare.enabled) {
       for (const key of ['gares_ouest', 'gares_est', 'gares_sncf_ouest']) {
         const data = spatialData?.[key]
         if (data?.features) {
           const layer = L.geoJSON(data, {
-            pointToLayer: (f, ll) => L.circleMarker(ll, { radius: 4, color: '#2563eb', fillColor: '#2563eb', fillOpacity: 0.3, weight: 1 }),
+            pointToLayer: (f, ll) => L.circleMarker(ll, { radius: 5, color: '#2563eb', fillColor: '#2563eb', fillOpacity: 0.25, weight: 1 }),
           }).addTo(map)
           overlaysRef.current.push(layer)
         }
@@ -127,13 +132,11 @@ export default function MapView({ criteria, spatialData, intersection, loading }
     const map = mapInstance.current
     if (!map) return
 
-    // Remove old intersection layer
     if (intersectionLayerRef.current) {
       map.removeLayer(intersectionLayerRef.current)
       intersectionLayerRef.current = null
     }
 
-    // Add new intersection
     if (intersection?.features?.length > 0) {
       const layer = L.geoJSON(intersection, {
         style: {
@@ -145,15 +148,12 @@ export default function MapView({ criteria, spatialData, intersection, loading }
         },
       }).addTo(map)
       intersectionLayerRef.current = layer
-
-      // Fit map to intersection
       map.fitBounds(layer.getBounds(), { padding: [50, 50] })
     }
   }, [intersection])
 
   return (
     <div className="flex-1 relative">
-      {/* Loading overlay */}
       {loading && (
         <div className="absolute inset-0 z-[1000] bg-white/50 flex items-center justify-center pointer-events-none">
           <div className="bg-white rounded-lg shadow-lg px-6 py-4 text-sm text-gray-600 flex items-center gap-3">
