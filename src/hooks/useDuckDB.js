@@ -136,9 +136,11 @@ export function useDuckDB() {
   })
   const stateRef = useRef(state)
 
-  const computeIntersection = useCallback(async (criteria, spatialData) => {
+  const computeIntersection = useCallback(async (criteria, spatialData, options = {}) => {
     const current = stateRef.current
     if (!current.ready || !spatialData) return
+
+    const { mode = 'km', isochrones = {} } = options
 
     try {
       const { conn } = await initDuckDB()
@@ -159,18 +161,39 @@ export function useDuckDB() {
         }
       }
 
+      // Handle time mode: load real isochrone polygons into DuckDB
+      if (mode === 'time' && isochrones.menilJean && isochrones.maySurOrne) {
+        await loadGeoJSONTable(conn, 'isochrone_menil',
+          { type: 'FeatureCollection', features: [isochrones.menilJean] }, ['name'])
+        await loadGeoJSONTable(conn, 'isochrone_may',
+          { type: 'FeatureCollection', features: [isochrones.maySurOrne] }, ['name'])
+      }
+
       const menilKm = criteria.menilJean.enabled ? criteria.menilJean.km : 99999
       const mayKm = criteria.maySurOrne.enabled ? criteria.maySurOrne.km : 99999
 
-      // Step-by-step CTE: each step only considers features that intersect the current zone
-      let query = `
-        WITH zone0 AS (
+      // Build zone0 depending on mode
+      let zone0Sql
+      if (mode === 'time' && isochrones.menilJean && isochrones.maySurOrne) {
+        // Real isochrone polygons from ORS
+        zone0Sql = `
+          SELECT ST_Intersection(
+            (SELECT geom FROM isochrone_menil LIMIT 1),
+            (SELECT geom FROM isochrone_may LIMIT 1)
+          ) AS geom
+        `
+      } else {
+        // Fallback: circular buffers (km mode)
+        zone0Sql = `
           SELECT ST_Intersection(
             ST_Buffer(${stPoint(MENIL_JEAN[0], MENIL_JEAN[1])}, ${menilKm} * 1000),
             ST_Buffer(${stPoint(MAY_SUR_ORNE[0], MAY_SUR_ORNE[1])}, ${mayKm} * 1000)
           ) AS geom
-        )
-      `
+        `
+      }
+
+      // Step-by-step CTE
+      let query = `WITH zone0 AS (${zone0Sql})`
 
       let currentAlias = 'zone0'
       let stepIdx = 0

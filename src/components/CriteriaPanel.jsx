@@ -2,13 +2,24 @@ import { useCallback } from 'react'
 import CriteriaToggle from './CriteriaToggle.jsx'
 import CriteriaSlider from './CriteriaSlider.jsx'
 
-export default function CriteriaPanel({ criteria, onChange, loading, error, data }) {
+export default function CriteriaPanel({
+  criteria, onChange, loading, error, data,
+  mode, onModeChange,        // 'km' | 'time'
+  apiKey, onApiKeyChange,    // ORS API key
+  isochroneStatus,           // { fetching, fetchError, hasMenil, hasMay }
+  dbReady,
+  intersectionCount,
+}) {
   const toggle = useCallback((key) => {
     onChange({ [key]: { ...criteria[key], enabled: !criteria[key].enabled } })
   }, [criteria, onChange])
 
   const setKm = useCallback((key, km) => {
     onChange({ [key]: { ...criteria[key], km } })
+  }, [criteria, onChange])
+
+  const setMin = useCallback((key, min) => {
+    onChange({ [key]: { ...criteria[key], min } })
   }, [criteria, onChange])
 
   const activeCount = Object.values(criteria).filter(c => c.enabled).length
@@ -22,39 +33,109 @@ export default function CriteriaPanel({ criteria, onChange, loading, error, data
         <p className="text-sm text-gray-500 mt-1">Normandie · {activeCount} critère{activeCount > 1 ? 's' : ''} actif{activeCount > 1 ? 's' : ''}</p>
       </div>
 
-      {/* Status */}
+      {/* Status bar */}
       <div className="px-4 pt-3 pb-1 flex items-center gap-2">
         <span className={`inline-block w-2 h-2 rounded-full ${
-          loading ? 'bg-amber-400 animate-pulse' : error ? 'bg-red-500' : 'bg-green-500'
+          loading || isochroneStatus?.fetching ? 'bg-amber-400 animate-pulse' : error ? 'bg-red-500' : 'bg-green-500'
         }`} />
         <span className="text-xs text-gray-400">
-          {loading ? 'Chargement des données...' : error ? `Erreur: ${error}` : `${dataFiles.length} jeux de données chargés`}
+          {isochroneStatus?.fetching ? 'Calcul isochrones...' :
+           loading ? 'Chargement...' :
+           error ? `Erreur: ${error}` :
+           isochroneStatus?.fetchError ? `ORS: ${isochroneStatus.fetchError.slice(0, 40)}` :
+           `${dataFiles.length} jeux de données`}
         </span>
       </div>
 
+      {/* Mode toggle: km ↔ temps voiture */}
+      <div className="px-4 pt-3 pb-1">
+        <div className="flex bg-gray-100 rounded-lg p-0.5">
+          <button
+            onClick={() => onModeChange('km')}
+            className={`flex-1 text-xs font-medium py-1.5 rounded-md transition-colors ${
+              mode === 'km' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >À vol d'oiseau (km)</button>
+          <button
+            onClick={() => onModeChange('time')}
+            className={`flex-1 text-xs font-medium py-1.5 rounded-md transition-colors ${
+              mode === 'time' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >Temps voiture (min)</button>
+        </div>
+      </div>
+
+      {/* ORS API Key (only in time mode) */}
+      {mode === 'time' && (
+        <div className="px-4 pt-2 pb-1">
+          <input
+            type="text"
+            placeholder="Clé API OpenRouteService..."
+            value={apiKey || ''}
+            onChange={(e) => onApiKeyChange(e.target.value)}
+            className="w-full text-xs border border-gray-200 rounded-md px-2.5 py-1.5 text-gray-700 placeholder-gray-300 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+          />
+          <p className="text-[10px] text-gray-400 mt-0.5">
+            Gratuit sur openrouteservice.org
+          </p>
+        </div>
+      )}
+
       {/* Criteria list */}
       <div className="flex-1 p-4 space-y-5">
-        <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Isochrones</p>
+        <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">
+          {mode === 'time' ? 'Isochrones temps de route' : 'Isochrones'}
+        </p>
 
-        <CriteriaSlider
-          label="Ménil-Jean"
-          description="Distance max depuis Ménil-Jean"
-          enabled={criteria.menilJean.enabled}
-          value={criteria.menilJean.km}
-          min={10} max={200} step={5} unit="km"
-          onToggle={() => toggle('menilJean')}
-          onChange={(v) => setKm('menilJean', v)}
-        />
-
-        <CriteriaSlider
-          label="May-sur-Orne"
-          description="Distance max depuis May-sur-Orne"
-          enabled={criteria.maySurOrne.enabled}
-          value={criteria.maySurOrne.km}
-          min={10} max={200} step={5} unit="km"
-          onToggle={() => toggle('maySurOrne')}
-          onChange={(v) => setKm('maySurOrne', v)}
-        />
+        {mode === 'km' ? (
+          <>
+            <CriteriaSlider
+              label="Ménil-Jean"
+              description="Distance max depuis Ménil-Jean"
+              enabled={criteria.menilJean.enabled}
+              value={criteria.menilJean.km}
+              min={10} max={200} step={5} unit="km"
+              onToggle={() => toggle('menilJean')}
+              onChange={(v) => setKm('menilJean', v)}
+            />
+            <CriteriaSlider
+              label="May-sur-Orne"
+              description="Distance max depuis May-sur-Orne"
+              enabled={criteria.maySurOrne.enabled}
+              value={criteria.maySurOrne.km}
+              min={10} max={200} step={5} unit="km"
+              onToggle={() => toggle('maySurOrne')}
+              onChange={(v) => setKm('maySurOrne', v)}
+            />
+          </>
+        ) : (
+          <>
+            <CriteriaSlider
+              label="Ménil-Jean"
+              description="Temps max en voiture depuis Ménil-Jean"
+              enabled={criteria.menilJean.enabled}
+              value={criteria.menilJean.min}
+              min={5} max={120} step={5} unit="min"
+              onToggle={() => toggle('menilJean')}
+              onChange={(v) => setMin('menilJean', v)}
+            />
+            <CriteriaSlider
+              label="May-sur-Orne"
+              description="Temps max en voiture depuis May-sur-Orne"
+              enabled={criteria.maySurOrne.enabled}
+              value={criteria.maySurOrne.min}
+              min={5} max={120} step={5} unit="min"
+              onToggle={() => toggle('maySurOrne')}
+              onChange={(v) => setMin('maySurOrne', v)}
+            />
+            {isochroneStatus?.fetching && (
+              <div className="text-xs text-amber-500 flex items-center gap-1.5 pl-0.5">
+                <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse inline-block" />
+                Calcul des isochrones routiers...
+              </div>
+            )}
+          </>
+        )}
 
         <div className="border-t border-gray-100 pt-4">
           <p className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-3">Risques & Environnement</p>
@@ -115,8 +196,16 @@ export default function CriteriaPanel({ criteria, onChange, loading, error, data
       {/* Data source info */}
       <div className="p-3 border-t border-gray-100 text-xs text-gray-400 space-y-0.5">
         <p className="flex items-center gap-1">
-          <span className="w-2 h-2 rounded-full bg-green-400 inline-block" />
-          Données chargées : {dataFiles.length || '—'}
+          <span className={`w-2 h-2 rounded-full inline-block ${mode === 'time' && isochroneStatus?.hasMenil ? 'bg-green-400' : 'bg-blue-400'}`} />
+          {mode === 'time'
+            ? (isochroneStatus?.hasMenil ? 'Isochrone Ménil-Jean prêt' : 'Mode km (vol d\'oiseau)')
+            : 'Mode km (vol d\'oiseau)'}
+        </p>
+        <p className="flex items-center gap-1">
+          <span className={`w-2 h-2 rounded-full inline-block ${mode === 'time' && isochroneStatus?.hasMay ? 'bg-green-400' : 'bg-blue-400'}`} />
+          {mode === 'time'
+            ? (isochroneStatus?.hasMay ? 'Isochrone May-sur-Orne prêt' : 'En attente…')
+            : 'Buffers circulaires'}
         </p>
         {dataFiles.length > 0 && (
           <p className="text-gray-300 truncate">{dataFiles.join(', ')}</p>

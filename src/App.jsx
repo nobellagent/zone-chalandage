@@ -3,10 +3,11 @@ import CriteriaPanel from './components/CriteriaPanel.jsx'
 import MapView from './components/MapView.jsx'
 import { useSpatialData } from './hooks/useSpatialData.js'
 import { useDuckDB } from './hooks/useDuckDB.js'
+import { useIsochroneFetcher } from './hooks/useIsochroneFetcher.js'
 
 const DEFAULT_CRITERIA = {
-  menilJean: { enabled: true, km: 120 },
-  maySurOrne: { enabled: true, km: 120 },
+  menilJean: { enabled: true, km: 120, min: 60 },
+  maySurOrne: { enabled: true, km: 120, min: 60 },
   inondation: { enabled: true },
   seveso: { enabled: true },
   zoneHumide: { enabled: true },
@@ -18,24 +19,58 @@ const DEFAULT_CRITERIA = {
 export default function App() {
   const [criteria, setCriteria] = useState(DEFAULT_CRITERIA)
   const [panelOpen, setPanelOpen] = useState(true)
+  const [mode, setMode] = useState('km')  // 'km' | 'time'
+  const [apiKey, setApiKey] = useState('')
   const criteriaRef = useRef(criteria)
 
   const spatial = useSpatialData()
   const duckdb = useDuckDB()
+  const isochrone = useIsochroneFetcher()
 
   // Keep ref in sync
   useEffect(() => { criteriaRef.current = criteria }, [criteria])
 
-  // Recompute when criteria or spatial data changes
+  // Fetch isochrones when mode=time and criteria or apiKey changes
   useEffect(() => {
-    if (duckdb.ready && spatial.data && !spatial.loading) {
-      duckdb.computeIntersection(criteriaRef.current, spatial.data)
+    if (mode === 'time' && apiKey && criteria.menilJean.enabled && criteria.maySurOrne.enabled) {
+      isochrone.fetchAll(apiKey, criteria.menilJean.min, criteria.maySurOrne.min)
     }
-  }, [duckdb.ready, spatial.data, spatial.loading, criteria])
+  }, [mode, apiKey, criteria.menilJean.min, criteria.maySurOrne.min,
+      criteria.menilJean.enabled, criteria.maySurOrne.enabled])
+
+  // Recompute when ready
+  useEffect(() => {
+    if (!duckdb.ready || !spatial.data || spatial.loading) return
+
+    if (mode === 'time' && isochrone.isochrones.menilJean && isochrone.isochrones.maySurOrne) {
+      duckdb.computeIntersection(criteriaRef.current, spatial.data, {
+        mode: 'time',
+        isochrones: isochrone.isochrones,
+      })
+    } else if (mode === 'km') {
+      duckdb.computeIntersection(criteriaRef.current, spatial.data, { mode: 'km' })
+    }
+  }, [duckdb.ready, spatial.data, spatial.loading,
+      criteria, mode, isochrone.isochrones])
 
   const handleCriteriaChange = useCallback((updated) => {
     setCriteria(prev => ({ ...prev, ...updated }))
   }, [])
+
+  const handleModeChange = useCallback((newMode) => {
+    setMode(newMode)
+  }, [])
+
+  const handleApiKeyChange = useCallback((key) => {
+    setApiKey(key)
+  }, [])
+
+  const isochroneStatus = {
+    fetching: isochrone.fetching,
+    fetchError: isochrone.fetchError,
+    hasMenil: !!isochrone.isochrones.menilJean,
+    hasMay: !!isochrone.isochrones.maySurOrne,
+  }
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-gray-50 relative">
@@ -51,6 +86,11 @@ export default function App() {
           data={spatial.data}
           dbReady={duckdb.ready}
           intersectionCount={duckdb.intersection?.features?.length || 0}
+          mode={mode}
+          onModeChange={handleModeChange}
+          apiKey={apiKey}
+          onApiKeyChange={handleApiKeyChange}
+          isochroneStatus={isochroneStatus}
         />
       </div>
 
@@ -70,8 +110,10 @@ export default function App() {
         spatialData={spatial.data}
         intersection={duckdb.intersection}
         zone0={duckdb.zone0}
-        loading={spatial.loading || duckdb.loading}
+        loading={spatial.loading || duckdb.loading || isochrone.fetching}
         panelOpen={panelOpen}
+        mode={mode}
+        isochronePolygons={isochrone.isochrones}
       />
     </div>
   )

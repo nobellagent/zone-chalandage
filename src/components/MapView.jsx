@@ -12,25 +12,30 @@ const TILE_PROVIDERS = {
   satellite: { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr: '&copy; Esri' },
 }
 
-export default function MapView({ criteria, spatialData, intersection, zone0, loading, panelOpen }) {
+export default function MapView({ criteria, spatialData, intersection, zone0, loading, panelOpen, mode, isochronePolygons }) {
   const mapRef = useRef(null)
   const mapInstance = useRef(null)
   const overlaysRef = useRef([])
   const intersectionLayerRef = useRef(null)
   const zone0LayerRef = useRef(null)
+  const isochroneLayerRef = useRef(null)
   const [tiles, setTiles] = useState('osm')
 
   // Legend
   const activeInfo = useMemo(() => {
     const a = []
-    if (criteria.menilJean.enabled) a.push({ label: `Isochrone Ménil-Jean ${criteria.menilJean.km} km`, color: '#2563eb' })
-    if (criteria.maySurOrne.enabled) a.push({ label: `Isochrone May-sur-Orne ${criteria.maySurOrne.km} km`, color: '#7c3aed' })
+    if (criteria.menilJean.enabled) {
+      a.push({ label: mode === 'time' ? `Isochrone Ménil-Jean ${criteria.menilJean.min} min` : `Isochrone Ménil-Jean ${criteria.menilJean.km} km`, color: '#2563eb' })
+    }
+    if (criteria.maySurOrne.enabled) {
+      a.push({ label: mode === 'time' ? `Isochrone May-sur-Orne ${criteria.maySurOrne.min} min` : `Isochrone May-sur-Orne ${criteria.maySurOrne.km} km`, color: '#7c3aed' })
+    }
     if (criteria.seveso.enabled) a.push({ label: 'Zone SEVESO exclue', color: '#dc2626' })
     if (criteria.grandeRoute.enabled) a.push({ label: `Route exclue (${criteria.grandeRoute.km} km)`, color: '#f97316' })
     if (criteria.nuisance.enabled) a.push({ label: `Nuisance exclue (${criteria.nuisance.km} km)`, color: '#ea580c' })
     if (criteria.gare.enabled) a.push({ label: `Inclusion gare (${criteria.gare.km} km)`, color: '#2563eb' })
     return a
-  }, [criteria])
+  }, [criteria, mode])
 
   // Init map once — SVG renderer (more reliable z-index than canvas)
   useEffect(() => {
@@ -87,14 +92,41 @@ export default function MapView({ criteria, spatialData, intersection, zone0, lo
     overlaysRef.current.forEach(l => { try { map.removeLayer(l) } catch {} })
     overlaysRef.current = []
 
-    // Isochrone circles (always lightweight)
-    if (criteria.menilJean.enabled) {
-      const c = L.circle(MENIL_JEAN, { radius: criteria.menilJean.km * 1000, color: '#2563eb', fillColor: '#2563eb', fillOpacity: 0.06, opacity: 0.4, weight: 2, dashArray: '8, 4' }).addTo(map)
-      overlaysRef.current.push(c)
-    }
-    if (criteria.maySurOrne.enabled) {
-      const c = L.circle(MAY_SUR_ORNE, { radius: criteria.maySurOrne.km * 1000, color: '#7c3aed', fillColor: '#7c3aed', fillOpacity: 0.06, opacity: 0.4, weight: 2, dashArray: '8, 4' }).addTo(map)
-      overlaysRef.current.push(c)
+    // Isochrones: circles (km mode) or real polygons (time mode)
+    if (mode === 'time' && isochronePolygons?.menilJean && isochronePolygons?.maySurOrne) {
+      // Real isochrone polygons from ORS
+      const menilLayer = L.geoJSON(isochronePolygons.menilJean, {
+        style: { color: '#2563eb', fillColor: '#2563eb', fillOpacity: 0.1, weight: 2, opacity: 0.5, dashArray: '6, 3' },
+      }).bindPopup('<b>Ménil-Jean isochrone</b>').addTo(map)
+      overlaysRef.current.push(menilLayer)
+
+      const mayLayer = L.geoJSON(isochronePolygons.maySurOrne, {
+        style: { color: '#7c3aed', fillColor: '#7c3aed', fillOpacity: 0.1, weight: 2, opacity: 0.5, dashArray: '6, 3' },
+      }).bindPopup('<b>May-sur-Orne isochrone</b>').addTo(map)
+      overlaysRef.current.push(mayLayer)
+
+      // Fit bounds to show both isochrones
+      const allFeats = {
+        type: 'FeatureCollection',
+        features: [isochronePolygons.menilJean, isochronePolygons.maySurOrne].filter(Boolean),
+      }
+      if (allFeats.features.length > 0) {
+        try {
+          const fitLayer = L.geoJSON(allFeats)
+          map.fitBounds(fitLayer.getBounds(), { padding: [50, 50] })
+          fitLayer.remove()
+        } catch {}
+      }
+    } else {
+      // Fallback: circular buffers (km mode)
+      if (criteria.menilJean.enabled) {
+        const c = L.circle(MENIL_JEAN, { radius: criteria.menilJean.km * 1000, color: '#2563eb', fillColor: '#2563eb', fillOpacity: 0.06, opacity: 0.4, weight: 2, dashArray: '8, 4' }).addTo(map)
+        overlaysRef.current.push(c)
+      }
+      if (criteria.maySurOrne.enabled) {
+        const c = L.circle(MAY_SUR_ORNE, { radius: criteria.maySurOrne.km * 1000, color: '#7c3aed', fillColor: '#7c3aed', fillOpacity: 0.06, opacity: 0.4, weight: 2, dashArray: '8, 4' }).addTo(map)
+        overlaysRef.current.push(c)
+      }
     }
 
     // Exclusion: SEVESO sites — use lightweight circle markers
@@ -134,7 +166,7 @@ export default function MapView({ criteria, spatialData, intersection, zone0, lo
       }
     }
 
-  }, [criteria, spatialData])
+  }, [criteria, spatialData, mode, isochronePolygons])
 
   // Update zone0 layer (initial intersection — bold outline)
   useEffect(() => {
