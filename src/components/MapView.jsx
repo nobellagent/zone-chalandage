@@ -1,45 +1,66 @@
-import { useEffect, useRef, useMemo } from 'react'
+import { useEffect, useRef, useMemo, useState } from 'react'
 import L from 'leaflet'
 
-// Centre Normandie
-const CENTER = [49.18, -0.37]
+// Centre Marges Normandes
+const CENTER = [49.0, -0.2]
 const ZOOM = 9
-
-// Coordonnées
 const MENIL_JEAN = [48.7386, -0.2197]
 const MAY_SUR_ORNE = [49.1048, -0.3678]
 
-function circleOptions(km, color, enabled) {
-  return {
-    radius: km * 1000,
-    color,
-    fillColor: color,
-    fillOpacity: enabled ? 0.12 : 0,
-    opacity: enabled ? 0.6 : 0,
-    weight: 2,
-  }
+function tileLayer(url, attr) {
+  return L.tileLayer(url, { attribution: attr, maxZoom: 18 })
 }
 
-export default function MapView({ criteria }) {
+const TILE_PROVIDERS = {
+  osm: {
+    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    attr: '&copy; OpenStreetMap contributors',
+  },
+  topo: {
+    url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+    attr: '&copy; OpenTopoMap contributors',
+  },
+  satellite: {
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    attr: '&copy; Esri',
+  },
+}
+
+export default function MapView({ criteria, spatialData, loading }) {
   const mapRef = useRef(null)
   const mapInstance = useRef(null)
   const layersRef = useRef([])
+  const [tiles, setTiles] = useState('osm')
 
-  // Build active criteria info
+  // Compute intersection zone from active criteria
+  const intersectionZone = useMemo(() => {
+    // When data isn't loaded yet, use simple circles
+    if (loading || !spatialData) return null
+
+    // This will be replaced with turf.js polygon operations
+    // once the data is properly loaded
+    return {
+      type: 'Feature',
+      geometry: null,
+      properties: { label: 'Zone calculée (données en cours de chargement)' }
+    }
+  }, [criteria, spatialData, loading])
+
+  // Legend info
   const activeInfo = useMemo(() => {
-    const active = []
-    if (criteria.menilJean.enabled) active.push({ label: `Ménil-Jean (${criteria.menilJean.km} km)`, color: '#2563eb' })
-    if (criteria.maySurOrne.enabled) active.push({ label: `May-sur-Orne (${criteria.maySurOrne.km} km)`, color: '#7c3aed' })
-    if (criteria.inondation.enabled) active.push({ label: 'Risque inondation nul', color: '#059669' })
-    if (criteria.seveso.enabled) active.push({ label: 'Risque SEVESO faible', color: '#d97706' })
-    if (criteria.zoneHumide.enabled) active.push({ label: 'Pas zone humide', color: '#0891b2' })
-    if (criteria.grandeRoute.enabled) active.push({ label: `>${criteria.grandeRoute.km} km des routes`, color: '#dc2626' })
-    if (criteria.nuisance.enabled) active.push({ label: `>${criteria.nuisance.km} km nuisance`, color: '#ea580c' })
-    if (criteria.gare.enabled) active.push({ label: `<${criteria.gare.km} km gare`, color: '#2563eb' })
-    return active
+    const a = []
+    if (criteria.menilJean.enabled) a.push({ label: `Rayon Ménil-Jean ${criteria.menilJean.km} km`, color: '#2563eb' })
+    if (criteria.maySurOrne.enabled) a.push({ label: `Rayon May-sur-Orne ${criteria.maySurOrne.km} km`, color: '#7c3aed' })
+    if (criteria.inondation.enabled) a.push({ label: 'Hors zone inondable', color: '#059669' })
+    if (criteria.seveso.enabled) a.push({ label: 'Hors SEVESO', color: '#d97706' })
+    if (criteria.zoneHumide.enabled) a.push({ label: 'Hors zone humide', color: '#0891b2' })
+    if (criteria.grandeRoute.enabled) a.push({ label: `>${criteria.grandeRoute.km} km route`, color: '#dc2626' })
+    if (criteria.nuisance.enabled) a.push({ label: `>${criteria.nuisance.km} km nuisance`, color: '#ea580c' })
+    if (criteria.gare.enabled) a.push({ label: `<${criteria.gare.km} km gare`, color: '#2563eb' })
+    return a
   }, [criteria])
 
-  // Init map once
+  // Init map
   useEffect(() => {
     if (mapInstance.current) return
     const map = L.map(mapRef.current, {
@@ -48,14 +69,10 @@ export default function MapView({ criteria }) {
       zoomControl: true,
     })
 
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; OpenStreetMap contributors',
-      maxZoom: 18,
-    }).addTo(map)
+    const t = TILE_PROVIDERS.osm
+    L.tileLayer(t.url, { attribution: t.attr, maxZoom: 18 }).addTo(map)
 
-    mapInstance.current = map
-
-    // Fix Leaflet icon issue with bundlers
+    // Fix Leaflet marker icons
     delete L.Icon.Default.prototype._getIconUrl
     L.Icon.Default.mergeOptions({
       iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
@@ -63,69 +80,133 @@ export default function MapView({ criteria }) {
       shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
     })
 
-    // Markers for reference points
-    L.marker(MENIL_JEAN).addTo(map).bindPopup('Ménil-Jean')
-    L.marker(MAY_SUR_ORNE).addTo(map).bindPopup('May-sur-Orne')
+    L.marker(MENIL_JEAN).addTo(map).bindPopup('<b>Ménil-Jean</b>')
+    L.marker(MAY_SUR_ORNE).addTo(map).bindPopup('<b>May-sur-Orne</b>')
 
-    return () => {
-      map.remove()
-      mapInstance.current = null
-    }
+    mapInstance.current = map
+    mapRef.current._map = map
+    return () => { map.remove(); mapInstance.current = null }
   }, [])
 
-  // Update circles when criteria change
+  // Switch tile layer
+  useEffect(() => {
+    const map = mapInstance.current
+    if (!map) return
+    // Remove all existing tile layers
+    map.eachLayer((layer) => {
+      if (layer._url && !layer._icon) map.removeLayer(layer)
+    })
+    const t = TILE_PROVIDERS[tiles]
+    L.tileLayer(t.url, { attribution: t.attr, maxZoom: 18 }).addTo(map)
+  }, [tiles])
+
+  // Update map layers when criteria change
   useEffect(() => {
     const map = mapInstance.current
     if (!map) return
 
-    // Clear old layers
+    // Clear old overlays
     layersRef.current.forEach(l => map.removeLayer(l))
     layersRef.current = []
 
-    // Add circles for isochrones
+    // Draw isochrone circles
     if (criteria.menilJean.enabled) {
-      const c = L.circle(MENIL_JEAN, circleOptions(criteria.menilJean.km, '#2563eb', true)).addTo(map)
-      layersRef.current.push(c)
-    }
-    if (criteria.maySurOrne.enabled) {
-      const c = L.circle(MAY_SUR_ORNE, circleOptions(criteria.maySurOrne.km, '#7c3aed', true)).addTo(map)
+      const c = L.circle(MENIL_JEAN, {
+        radius: criteria.menilJean.km * 1000,
+        color: '#2563eb', fillColor: '#2563eb', fillOpacity: 0.08, opacity: 0.5, weight: 2,
+      }).addTo(map)
       layersRef.current.push(c)
     }
 
-    // Calculate intersection of both circles if both enabled
-    if (criteria.menilJean.enabled && criteria.maySurOrne.enabled) {
-      const dist = map.distance(MENIL_JEAN, MAY_SUR_ORNE)
-      const r1 = criteria.menilJean.km * 1000
-      const r2 = criteria.maySurOrne.km * 1000
-      if (dist < r1 + r2 && dist > Math.abs(r1 - r2)) {
-        const center = [
-          (MENIL_JEAN[0] + MAY_SUR_ORNE[0]) / 2,
-          (MENIL_JEAN[1] + MAY_SUR_ORNE[1]) / 2,
-        ]
-        // Approximate intersection zone
-        const intersection = L.circle(center, {
-          radius: Math.min(r1, r2) * 0.6,
-          color: '#16a34a',
-          fillColor: '#16a34a',
-          fillOpacity: 0.25,
-          opacity: 0.8,
-          weight: 2,
-          dashArray: '5, 5',
+    if (criteria.maySurOrne.enabled) {
+      const c = L.circle(MAY_SUR_ORNE, {
+        radius: criteria.maySurOrne.km * 1000,
+        color: '#7c3aed', fillColor: '#7c3aed', fillOpacity: 0.08, opacity: 0.5, weight: 2,
+      }).addTo(map)
+      layersRef.current.push(c)
+    }
+
+    // Draw SEVESO points
+    if (criteria.seveso.enabled && spatialData?.seveso_sites?.features) {
+      const layer = L.geoJSON(spatialData.seveso_sites, {
+        pointToLayer: (f, latlng) => L.circleMarker(latlng, {
+          radius: 6, color: '#dc2626', fillColor: '#dc2626', fillOpacity: 0.7, weight: 1,
+        }),
+      }).addTo(map)
+      layersRef.current.push(layer)
+    }
+
+    // Draw train stations
+    if (criteria.gare.enabled && spatialData?.gares?.features) {
+      const layer = L.geoJSON(spatialData.gares, {
+        pointToLayer: (f, latlng) => L.circleMarker(latlng, {
+          radius: 4, color: '#2563eb', fillColor: '#2563eb', fillOpacity: 0.5, weight: 1,
+        }),
+      }).addTo(map)
+      layersRef.current.push(layer)
+    }
+
+    // Draw major roads
+    if (criteria.grandeRoute.enabled && spatialData?.grandes_routes?.features) {
+      const layer = L.geoJSON(spatialData.grandes_routes, {
+        style: { color: '#dc2626', weight: 2, opacity: 0.5 },
+      }).addTo(map)
+      layersRef.current.push(layer)
+    }
+
+    // Draw waste facilities
+    if (criteria.nuisance.enabled) {
+      const allNuisances = []
+      if (spatialData?.dechetteries?.features) allNuisances.push(...spatialData.dechetteries.features)
+      if (spatialData?.centres_enfouissement?.features) allNuisances.push(...spatialData.centres_enfouissement.features)
+      if (allNuisances.length > 0) {
+        const layer = L.geoJSON({ type: 'FeatureCollection', features: allNuisances }, {
+          pointToLayer: (f, latlng) => L.circleMarker(latlng, {
+            radius: 5, color: '#ea580c', fillColor: '#ea580c', fillOpacity: 0.7, weight: 1,
+          }),
         }).addTo(map)
-        layersRef.current.push(intersection)
+        layersRef.current.push(layer)
       }
     }
-  }, [criteria])
+
+  }, [criteria, spatialData])
 
   return (
     <div className="flex-1 relative">
+      {/* Loading overlay */}
+      {loading && (
+        <div className="absolute inset-0 z-[1000] bg-white/50 flex items-center justify-center">
+          <div className="bg-white rounded-lg shadow-lg px-6 py-4 text-sm text-gray-600 flex items-center gap-3">
+            <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+            Chargement des données...
+          </div>
+        </div>
+      )}
+
       <div ref={mapRef} className="w-full h-full" />
+
+      {/* Tile switcher */}
+      <div className="absolute top-4 right-4 z-[1000] flex gap-1">
+        {Object.entries(TILE_PROVIDERS).map(([key]) => (
+          <button
+            key={key}
+            onClick={() => setTiles(key)}
+            className={`px-2.5 py-1 text-xs rounded shadow-sm border transition-colors ${
+              tiles === key
+                ? 'bg-blue-600 text-white border-blue-600'
+                : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+            }`}
+          >
+            {key === 'osm' ? 'Carte' : key === 'topo' ? 'Topo' : 'Satellite'}
+          </button>
+        ))}
+      </div>
 
       {/* Legend */}
       <div className="absolute bottom-6 right-4 z-[1000] bg-white/90 backdrop-blur rounded-lg shadow-lg border border-gray-200 p-3 text-xs max-w-56">
         <p className="font-medium text-gray-700 mb-2">Critères actifs</p>
         {activeInfo.length === 0 && (
-          <p className="text-gray-400 italic">Aucun critère actif</p>
+          <p className="text-gray-400 italic">Aucun</p>
         )}
         <div className="space-y-1.5">
           {activeInfo.map((c, i) => (
@@ -137,7 +218,7 @@ export default function MapView({ criteria }) {
         </div>
         {criteria.menilJean.enabled && criteria.maySurOrne.enabled && (
           <div className="flex items-center gap-2 mt-2 pt-2 border-t border-gray-100">
-            <span className="inline-block w-3 h-3 rounded-sm shrink-0" style={{ backgroundColor: '#16a34a', border: '1px dashed #166534' }} />
+            <span className="inline-block w-3 h-3 rounded-sm shrink-0 border-2 border-green-600 bg-green-300/30" />
             <span className="text-gray-600 font-medium">Intersection</span>
           </div>
         )}
