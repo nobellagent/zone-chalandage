@@ -49,13 +49,32 @@ function overpassToFC(data) {
   return {
     type: 'FeatureCollection',
     features: data.elements
-      .filter(e => e.lat || e.lon || e.center || e.geometry)
-      .map(e => ({
-        type: 'Feature',
-        geometry: e.geometry || { type: 'Point', coordinates: [e.center?.lon||e.lon, e.center?.lat||e.lat] },
-        properties: e.tags || { id: e.id }
-      }))
-      .filter(f => f.geometry?.coordinates || f.geometry?.geometries)
+      .filter(e => e.type)
+      .map(e => {
+        let geometry = null;
+        if (e.type === 'node') {
+          geometry = { type: 'Point', coordinates: [e.lon, e.lat] };
+        } else if (e.type === 'way' && Array.isArray(e.geometry) && e.geometry.length > 0) {
+          // e.geometry from Overpass 'out geom' is [{lat, lon}, ...]
+          geometry = {
+            type: 'LineString',
+            coordinates: e.geometry.map(pt => [pt.lon, pt.lat])
+          };
+        } else if (e.type === 'relation' && e.geometry?.type === 'MultiPolygon') {
+          // Already GeoJSON? Keep as-is.
+          geometry = e.geometry;
+        } else if (e.type === 'relation' && Array.isArray(e.members)) {
+          // For boundary relations with out geom, skip (too complex)
+          return null;
+        }
+        if (!geometry) return null;
+        return {
+          type: 'Feature',
+          geometry,
+          properties: e.tags || { id: e.id, type: e.type }
+        };
+      })
+      .filter(Boolean)
   };
 }
 

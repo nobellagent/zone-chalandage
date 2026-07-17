@@ -2,14 +2,11 @@ import { useState, useEffect } from 'react'
 
 const DATASET_FILES = [
   'seveso_sites',
-  'gares',
   'gares_ouest',
   'gares_est',
   'gares_sncf_ouest',
   'grandes_routes_ouest',
   'dechetteries',
-  'menil_jean',
-  'may_sur_orne',
 ]
 
 export function useSpatialData() {

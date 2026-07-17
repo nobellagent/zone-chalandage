@@ -5,30 +5,39 @@ const MENIL_JEAN = [48.7386, -0.2197]
 const MAY_SUR_ORNE = [49.1048, -0.3678]
 const SRID = 4326
 
-let duckdb = null
+let dbInstance = null
 let dbInitPromise = null
 
 /**
- * Initialize DuckDB WASM with spatial extension.
- * Returns {conn, db} once ready.
+ * Initialize DuckDB WASM with spatial extension using v1.33.x API.
  */
 async function initDuckDB() {
-  if (duckdb) return duckdb
+  if (dbInstance) return dbInstance
   if (dbInitPromise) return dbInitPromise
 
   dbInitPromise = (async () => {
     try {
-      const duckdb_wasm = await import('@duckdb/duckdb-wasm')
-      const JSDELIVR_CDN = 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/dist/'
+      const duckdb = await import('@duckdb/duckdb-wasm')
 
-      const bundle = new duckdb_wasm.AsyncDuckDBBundle()
-      const db = new duckdb_wasm.AsyncDuckDB()
-      
-      await db.instantiate(
-        `${JSDELIVR_CDN}duckdb-mvp.wasm`,
-        `${JSDELIVR_CDN}duckdb-browser-mvp.worker.js`,
-      )
+      // Logger required in v1.33+
+      const logger = new duckdb.ConsoleLogger()
 
+      // Get CDN bundles and select best one for this browser
+      const bundles = duckdb.getJsDelivrBundles()
+      const bundle = await duckdb.selectBundle({
+        mvp: bundles.mvp,
+        eh: bundles.eh,
+      })
+
+      // Create web worker
+      const worker = await duckdb.createWorker(bundle.mainWorker)
+
+      // Create & attach
+      const db = new duckdb.AsyncDuckDB(logger)
+      db.attach(worker)
+      await db.instantiate(bundle.mainModule)
+
+      // Connect
       const conn = await db.connect()
 
       // Load spatial extension
@@ -36,9 +45,9 @@ async function initDuckDB() {
       await conn.query(`LOAD spatial;`)
       await conn.query(`SET srid_range=${SRID};`)
 
-      console.log('✅ DuckDB spatial ready')
-      duckdb = { db, conn }
-      return duckdb
+      console.log('✅ DuckDB spatial ready (v1.33.x)')
+      dbInstance = { db, conn }
+      return dbInstance
     } catch (e) {
       console.error('❌ DuckDB init failed:', e)
       dbInitPromise = null
@@ -55,7 +64,6 @@ async function initDuckDB() {
 async function loadGeoJSONTable(conn, tableName, geojson, columns) {
   if (!geojson?.features?.length) return 0
 
-  // Create table from GeoJSON using ST_GeomFromGeoJSON
   const rows = geojson.features.map(f => {
     const geom = JSON.stringify(f.geometry)
     const props = f.properties || {}
@@ -80,22 +88,31 @@ async function loadGeoJSONTable(conn, tableName, geojson, columns) {
     await conn.query(`INSERT INTO ${tableName} VALUES ${vals};`)
   }
 
-  await conn.query(`ALTER TABLE ${tableName} ALTER geom TYPE GEOMETRY;`)
   return rows.length
 }
 
 /**
  * Convert DuckDB query result rows to GeoJSON FeatureCollection.
+ * v1.33.x conn.query() returns an Arrow Table, not raw rows.
  */
-function rowsToGeoJSON(rows) {
+function arrowToGeoJSON(table) {
   const features = []
-  for (const row of rows) {
-    const geojson = JSON.parse(row.geojson || row.geom_json || 'null')
+  const geojsonCol = 'geojson'
+  const colIndex = table.schema.fields.findIndex(
+    f => f.name === geojsonCol || f.name === 'geom_json'
+  )
+  if (colIndex === -1) return { type: 'FeatureCollection', features: [] }
+
+  for (let r = 0; r < table.numRows; r++) {
+    const row = table.get(r)
+    const raw = row[colIndex]
+    if (raw === null || raw === undefined) continue
+    const geojson = typeof raw === 'string' ? JSON.parse(raw) : raw
     if (geojson) {
       features.push({
         type: 'Feature',
         geometry: geojson,
-        properties: row.properties || {},
+        properties: {},
       })
     }
   }
@@ -108,10 +125,9 @@ export function useDuckDB() {
     loading: true,
     error: null,
     intersection: null,
-    dataLoaded: false,
+    lastQuery: null,
   })
   const stateRef = useRef(state)
-  const queryRef = useRef(null)
 
   const computeIntersection = useCallback(async (criteria, spatialData) => {
     const current = stateRef.current
@@ -121,7 +137,7 @@ export function useDuckDB() {
       const { conn } = await initDuckDB()
       if (!conn) return
 
-      // Load GeoJSON data into DuckDB tables
+      // Load relevant GeoJSON data into DuckDB tables
       const tables = {
         seveso: spatialData.seveso_sites,
         gares_ouest: spatialData.gares_ouest,
@@ -131,76 +147,17 @@ export function useDuckDB() {
       }
 
       for (const [name, geojson] of Object.entries(tables)) {
-        if (geojson) {
+        if (geojson?.features?.length > 0) {
           await loadGeoJSONTable(conn, name, geojson, ['nom', 'commune'])
         }
       }
 
       // Build the spatial query
-      // Strategy:
-      // 1. Get intersection zone of both isochrones (buffers around towns)
-      // 2. Subtract exclusion zones (SEVESO buffers, road buffers, nuisance buffers)
-      // 3. Intersect with inclusion zones (train station buffers)
-
-      const conditions = []
-
-      // Step 1: Isochrone intersection (buffer around each town)
       const menilKm = criteria.menilJean.enabled ? criteria.menilJean.km : 99999
       const mayKm = criteria.maySurOrne.enabled ? criteria.maySurOrne.km : 99999
 
-      const isochroneQuery = `
-        WITH isochrone AS (
-          SELECT ST_Intersection(
-            ST_Buffer(ST_Point(${MENIL_JEAN[1]}, ${MENIL_JEAN[0]}), ${menilKm} * 1000),
-            ST_Buffer(ST_Point(${MAY_SUR_ORNE[1]}, ${MAY_SUR_ORNE[0]}), ${mayKm} * 1000)
-          ) AS zone
-        )
-      `
-
-      // Step 2: Subtract exclusion zones
-      const exclusions = []
-
-      if (criteria.seveso.enabled) {
-        exclusions.push(`
-          (SELECT ST_UnionAgg(ST_Buffer(geom, 3000)) FROM seveso)
-        `)
-      }
-
-      if (criteria.grandeRoute.enabled) {
-        exclusions.push(`
-          (SELECT ST_UnionAgg(ST_Buffer(geom, ${criteria.grandeRoute.km * 1000})) FROM routes)
-        `)
-      }
-
-      if (criteria.nuisance.enabled) {
-        exclusions.push(`
-          (SELECT ST_UnionAgg(ST_Buffer(geom, ${criteria.nuisance.km * 1000})) FROM nuisances)
-        `)
-      }
-
-      // Step 3: Inclusion zones (train stations)
-      const inclusions = []
-      if (criteria.gare.enabled) {
-        inclusions.push(`
-          (SELECT ST_UnionAgg(ST_Buffer(geom, ${criteria.gare.km * 1000})) FROM (
-            SELECT * FROM gares_ouest UNION ALL SELECT * FROM gares_est
-          ))
-        `)
-      }
-
-      // Build final query
-      let query = `${isochroneQuery}\nSELECT ST_AsGeoJSON(result) AS geojson FROM (\n  SELECT zone AS result FROM isochrone\n`
-
-      for (const excl of exclusions) {
-        query = query.replace(
-          /SELECT zone AS result FROM isochrone/,
-          `SELECT ST_Difference(zone, ${excl}) AS result FROM isochrone`
-        )
-        // Actually need to chain these properly
-      }
-
-      // Simpler approach: chain operations step by step
-      let simpleQuery = `
+      // Build CTE chain: zone0 = intersection of buffers, then subtract exclusions, then intersect inclusions
+      let query = `
         WITH zone0 AS (
           SELECT ST_Intersection(
             ST_Buffer(ST_Point(${MENIL_JEAN[1]}, ${MENIL_JEAN[0]}), ${menilKm} * 1000),
@@ -210,32 +167,68 @@ export function useDuckDB() {
       `
 
       let currentAlias = 'zone0'
-      let exclusionIdx = 0
-      for (const excl of exclusions) {
-        exclusionIdx++
-        const alias = `zone${exclusionIdx}`
-        simpleQuery += `, ${alias} AS (\n  SELECT ST_Difference(${currentAlias}.geom, ${excl}) AS geom FROM ${currentAlias}\n)`
+      let stepIdx = 0
+
+      // Exclusion: SEVESO
+      if (criteria.seveso.enabled) {
+        stepIdx++
+        const alias = `zone${stepIdx}`
+        query += `, ${alias} AS (
+          SELECT ST_Difference(${currentAlias}.geom, (
+            SELECT ST_UnionAgg(ST_Buffer(geom, 3000)) FROM seveso
+          )) AS geom FROM ${currentAlias}
+        )`
         currentAlias = alias
       }
 
-      let inclusionIdx = 0
-      for (const incl of inclusions) {
-        inclusionIdx++
-        const alias = `zone${exclusionIdx + inclusionIdx}`
-        simpleQuery += `, ${alias} AS (\n  SELECT ST_Intersection(${currentAlias}.geom, ${incl}) AS geom FROM ${currentAlias}\n)`
+      // Exclusion: roads
+      if (criteria.grandeRoute.enabled) {
+        stepIdx++
+        const alias = `zone${stepIdx}`
+        query += `, ${alias} AS (
+          SELECT ST_Difference(${currentAlias}.geom, (
+            SELECT ST_UnionAgg(ST_Buffer(geom, ${criteria.grandeRoute.km * 1000})) FROM routes
+          )) AS geom FROM ${currentAlias}
+        )`
         currentAlias = alias
       }
 
-      simpleQuery += `\nSELECT ST_AsGeoJSON(geom) AS geojson FROM ${currentAlias} WHERE geom IS NOT NULL AND ST_Area(geom) > 0;`
+      // Exclusion: nuisances
+      if (criteria.nuisance.enabled) {
+        stepIdx++
+        const alias = `zone${stepIdx}`
+        query += `, ${alias} AS (
+          SELECT ST_Difference(${currentAlias}.geom, (
+            SELECT ST_UnionAgg(ST_Buffer(geom, ${criteria.nuisance.km * 1000})) FROM nuisances
+          )) AS geom FROM ${currentAlias}
+        )`
+        currentAlias = alias
+      }
 
-      // Execute
-      const result = await conn.query(simpleQuery)
-      const fc = rowsToGeoJSON(result.toArray())
+      // Inclusion: train stations
+      if (criteria.gare.enabled) {
+        stepIdx++
+        const alias = `zone${stepIdx}`
+        query += `, ${alias} AS (
+          SELECT ST_Intersection(${currentAlias}.geom, (
+            SELECT ST_UnionAgg(ST_Buffer(geom, ${criteria.gare.km * 1000})) FROM (
+              SELECT * FROM gares_ouest UNION ALL SELECT * FROM gares_est
+            )
+          )) AS geom FROM ${currentAlias}
+        )`
+        currentAlias = alias
+      }
+
+      query += `\nSELECT ST_AsGeoJSON(geom) AS geojson FROM ${currentAlias} WHERE geom IS NOT NULL AND ST_Area(geom) > 0;`
+
+      // Execute - v1.33.x returns an Arrow Table
+      const result = await conn.query(query)
+      const fc = arrowToGeoJSON(result)
 
       setState(prev => ({
         ...prev,
         intersection: fc.features.length > 0 ? fc : null,
-        lastQuery: simpleQuery,
+        lastQuery: query,
       }))
       stateRef.current = { ...stateRef.current, intersection: fc }
 
@@ -252,6 +245,9 @@ export function useDuckDB() {
       try {
         const { conn } = await initDuckDB()
         if (!cancelled) {
+          // Test query
+          const test = await conn.query('SELECT 1 AS n')
+          console.log('✅ DuckDB test query OK')
           setState(prev => ({ ...prev, ready: true, loading: false }))
           stateRef.current = { ...stateRef.current, ready: true }
         }
